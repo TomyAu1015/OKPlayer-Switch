@@ -31,6 +31,7 @@ jobs:
             unzip -q -o romfs_assets.zip -d .
           fi
           sed -i 's/ -lzstd//g' Makefile
+          sed -i 's|-f \$(CURDIR)/Makefile$|-f $(CURDIR)/Makefile all|' Makefile
           make clean
           make -j$(nproc)
           mkdir -p release_bundle/switch/OKPlayer-Switch
