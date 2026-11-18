@@ -20,7 +20,7 @@ jobs:
         run: |
           apt-get update && apt-get install -y python3 unzip zip
           dkp-pacman -Syu --noconfirm \
-            libnx switch-curl switch-mbedtls switch-zlib switch-zstd \
+            libnx switch-curl switch-mbedtls switch-zlib \
             switch-sdl2 switch-sdl2_ttf switch-sdl2_image \
             switch-freetype switch-harfbuzz switch-libpng switch-libjpeg-turbo switch-libwebp \
             switch-glad switch-mesa switch-libdrm_nouveau
@@ -30,6 +30,7 @@ jobs:
           if [ -f romfs_assets.zip ]; then
             unzip -q -o romfs_assets.zip -d .
           fi
+          sed -i 's/ -lzstd//g' Makefile
           make clean
           make -j$(nproc)
           mkdir -p release_bundle/switch/OKPlayer-Switch
