@@ -1,0 +1,47 @@
+name: Build Switch NSP & NRO (OKPlayer-Switch)
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-switch:
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkita64:latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Switch Portlibs & Python3
+        run: |
+          apt-get update && apt-get install -y python3 unzip zip
+          dkp-pacman -Syu --noconfirm \
+            libnx switch-curl switch-mbedtls switch-zlib switch-zstd \
+            switch-sdl2 switch-sdl2_ttf switch-sdl2_image \
+            switch-freetype switch-harfbuzz switch-libpng switch-libjpeg-turbo switch-libwebp \
+            switch-glad switch-mesa switch-libdrm_nouveau
+
+      - name: Unpack RomFS Assets & Compile NRO + NSP
+        run: |
+          if [ -f romfs_assets.zip ]; then
+            unzip -q -o romfs_assets.zip -d .
+          fi
+          make clean
+          make -j$(nproc)
+          mkdir -p release_bundle/switch/OKPlayer-Switch
+          cp OKPlayer-Switch.nro release_bundle/switch/OKPlayer-Switch/OKPlayer-Switch.nro
+          cp dist/OKPlayer_Switch_01058800A9E20000.nsp release_bundle/OKPlayer_Switch_01058800A9E20000.nsp
+
+      - name: Upload Switch NSP + NRO Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OKPlayer-Switch-NSP-and-NRO
+          path: |
+            OKPlayer-Switch.nro
+            dist/OKPlayer_Switch_01058800A9E20000.nsp
+            release_bundle/**
+          if-no-files-found: error
