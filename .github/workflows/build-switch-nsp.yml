@@ -16,15 +16,6 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Switch Portlibs & Python3
-        run: |
-          apt-get update && apt-get install -y python3 unzip zip
-          dkp-pacman -Syu --noconfirm \
-            libnx switch-curl switch-mbedtls switch-zlib switch-bzip2 \
-            switch-sdl2 switch-sdl2_ttf switch-sdl2_image \
-            switch-freetype switch-harfbuzz switch-libpng switch-libjpeg-turbo switch-libwebp \
-            switch-glad switch-mesa switch-libdrm_nouveau
-
       - name: Unpack RomFS Assets & Compile NRO + NSP
         run: |
           if [ -f romfs_assets.zip ]; then
