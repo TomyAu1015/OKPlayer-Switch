@@ -6,6 +6,8 @@
 #include <sstream>
 #include <iomanip>
 #include <cmath>
+#include <pthread.h>
+#include <functional>
 
 #ifdef __SWITCH__
 #include <switch.h>
@@ -49,6 +51,28 @@ SDL_Color cardAccentColor(const std::string& title) {
     size_t h = 0;
     for (unsigned char c : title) h = h * 31 + c;
     return PALETTE[h % (sizeof(PALETTE) / sizeof(PALETTE[0]))];
+}
+
+
+void spawnLargeStackThread(std::function<void()> fn) {
+    auto* heap_fn = new std::function<void()>(std::move(fn));
+    pthread_t tid;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 1024 * 1024); // 1 MB stack for libcurl + mbedTLS + regex on Switch
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    auto entry = [](void* arg) -> void* {
+        auto* f = static_cast<std::function<void()>*>(arg);
+        try {
+            (*f)();
+        } catch (...) {}
+        delete f;
+        return nullptr;
+    };
+    if (pthread_create(&tid, &attr, entry, heap_fn) != 0) {
+        delete heap_fn;
+    }
+    pthread_attr_destroy(&attr);
 }
 
 } // namespace
@@ -151,7 +175,7 @@ void SwitchPlayerShell::reloadSourceUrlAsync(const std::string& new_url) {
     }
     source_loading_.store(true);
     AppConfig cfg_copy = config_;
-    std::thread([this, cfg_copy]() mutable {
+    spawnLargeStackThread([this, cfg_copy]() mutable {
         LoadedSourceBundle fetched = SourceLoader::fetchAndParseSource(cfg_copy);
         {
             std::lock_guard<std::mutex> lk(data_mutex_);
@@ -159,7 +183,7 @@ void SwitchPlayerShell::reloadSourceUrlAsync(const std::string& new_url) {
             pending_source_apply_ = true;
         }
         source_loading_.store(false);
-    }).detach();
+    });
 }
 
 void SwitchPlayerShell::refreshCurrentSiteContent() {
@@ -222,7 +246,7 @@ void SwitchPlayerShell::openQrLoginModal(NetdiskProvider provider) {
     modal_state_ = ModalState::QR_LOGIN;
     qr_loading_.store(true);
 
-    std::thread([this, provider]() {
+    spawnLargeStackThread([this, provider]() {
         QRLoginSession s = (provider == NetdiskProvider::QUARK)
             ? NetdiskAuth::startQuarkQRLogin()
             : NetdiskAuth::startBaiduQRLogin();
@@ -233,7 +257,7 @@ void SwitchPlayerShell::openQrLoginModal(NetdiskProvider provider) {
             }
         }
         qr_loading_.store(false);
-    }).detach();
+    });
 }
 
 void SwitchPlayerShell::startPlayback(const VodItem& vod, const std::string& flag_name, int ep_index) {
@@ -500,7 +524,7 @@ void SwitchPlayerShell::updateFrame(uint64_t now_ms) {
         qr_polling_.store(true);
         QRLoginSession session_copy = active_qr_;
         AppConfig cfg_copy = config_;
-        std::thread([this, session_copy, cfg_copy]() mutable {
+        spawnLargeStackThread([this, session_copy, cfg_copy]() mutable {
             bool ok = (session_copy.provider == NetdiskProvider::QUARK)
                 ? NetdiskAuth::pollQuarkQRLogin(session_copy, cfg_copy)
                 : NetdiskAuth::pollBaiduQRLogin(session_copy, cfg_copy);
@@ -520,7 +544,7 @@ void SwitchPlayerShell::updateFrame(uint64_t now_ms) {
                 }
             }
             qr_polling_.store(false);
-        }).detach();
+        });
     }
 
     if (modal_state_ == ModalState::VIDEO_PLAYING && !player_paused_) {

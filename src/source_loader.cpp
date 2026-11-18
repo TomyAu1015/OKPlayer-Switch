@@ -50,10 +50,38 @@ std::string jsonEscape(const std::string& s) {
 }
 
 std::string extractJsonStringField(const std::string& text, const std::string& key) {
-    std::regex re("(?:\"" + key + "\"|'" + key + "'|\\b" + key + "\\b)\\s*:\\s*(?:\"((?:[^\"\\\\]|\\\\.)*)\"|'((?:[^'\\\\]|\\\\.)*)')");
-    std::smatch m;
-    if (std::regex_search(text, m, re)) {
-        return m[1].matched ? m[1].str() : m[2].str();
+    size_t pos = 0;
+    while (pos < text.size()) {
+        size_t kpos = text.find(key, pos);
+        if (kpos == std::string::npos) return "";
+        size_t after_key = kpos + key.size();
+        // Check quote or word boundary around key
+        bool left_ok = (kpos == 0) || (!std::isalnum(static_cast<unsigned char>(text[kpos - 1])) && text[kpos - 1] != '_');
+        if (left_ok) {
+            size_t p = after_key;
+            if (p < text.size() && (text[p] == '"' || text[p] == '\'')) ++p;
+            while (p < text.size() && (text[p] == ' ' || text[p] == '\t')) ++p;
+            if (p < text.size() && text[p] == ':') {
+                ++p;
+                while (p < text.size() && (text[p] == ' ' || text[p] == '\t')) ++p;
+                if (p < text.size() && (text[p] == '"' || text[p] == '\'')) {
+                    char q = text[p++];
+                    std::string val;
+                    while (p < text.size()) {
+                        if (text[p] == '\\' && p + 1 < text.size()) {
+                            val.push_back(text[p]);
+                            val.push_back(text[p + 1]);
+                            p += 2;
+                        } else if (text[p] == q) {
+                            return val;
+                        } else {
+                            val.push_back(text[p++]);
+                        }
+                    }
+                }
+            }
+        }
+        pos = after_key;
     }
     return "";
 }
