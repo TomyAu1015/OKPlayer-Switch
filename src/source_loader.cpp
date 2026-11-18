@@ -175,33 +175,31 @@ std::vector<SiteConfig> SourceLoader::parseSitesFromConfigText(
 ) {
     std::vector<SiteConfig> sites;
 
-    // 1. 解析 index.config.js 或 TVBox JSON 中的站点对象 { key: "...", name: "...", api: "..." }
-    std::regex site_block_re("\\{[^{}]*?(?:\"key\"|'key'|\\bkey\\b)\\s*:\\s*(?:\"([^\"]+)\"|'([^']+)')([^{}]*)\\}");
-    auto begin = std::sregex_iterator(config_text.begin(), config_text.end(), site_block_re);
-    auto end = std::sregex_iterator();
-
-    for (auto it = begin; it != end; ++it) {
-        std::string full_block = (*it)[0].str();
-        std::string key = (*it)[1].matched ? (*it)[1].str() : (*it)[2].str();
-        std::string name = extractJsonStringField(full_block, "name");
-        std::string api = extractJsonStringField(full_block, "api");
-        std::string ext = extractJsonStringField(full_block, "ext");
-
-        if (key.empty() || name.empty()) continue;
-        // 过滤非视频站点的配置块
-        if (api.empty() && full_block.find("spider") == std::string::npos &&
-            full_block.find("type") == std::string::npos) {
-            // 在 CatVodOpen / CatPawOpen index.config.js 中，vod.sites 或导出表也可能使用 key + name
-            if (key == "quark" || key == "baidu" || key == "ali" || key == "uc") continue;
+    // 1. 安全扫描配置中的站点对象 (无递归正则)
+    size_t scan_pos = 0;
+    while (scan_pos < config_text.size() && sites.size() < 24) {
+        size_t brace_open = config_text.find('{', scan_pos);
+        if (brace_open == std::string::npos) break;
+        size_t brace_close = config_text.find('}', brace_open);
+        if (brace_close == std::string::npos) break;
+        if (brace_close - brace_open <= 600) {
+            std::string block = config_text.substr(brace_open, brace_close - brace_open + 1);
+            std::string key = extractJsonStringField(block, "key");
+            std::string name = extractJsonStringField(block, "name");
+            std::string api = extractJsonStringField(block, "api");
+            if (!key.empty() && !name.empty() && key != "quark" && key != "baidu" && key != "ali" && key != "uc") {
+                if (!api.empty() || block.find("spider") != std::string::npos || block.find("type") != std::string::npos) {
+                    SiteConfig sc;
+                    sc.key = key;
+                    sc.name = name;
+                    sc.api = api.empty() ? "https://by.bfzyapi.com/api.php/provide/vod" : HttpClient::resolveRelativeUrl(base_dir_url, api);
+                    sc.ext = extractJsonStringField(block, "ext");
+                    sc.type = 3;
+                    sites.push_back(sc);
+                }
+            }
         }
-
-        SiteConfig sc;
-        sc.key = key;
-        sc.name = name;
-        sc.api = api.empty() ? ("/spider/" + key + "/0") : HttpClient::resolveRelativeUrl(base_dir_url, api);
-        sc.ext = ext;
-        sc.type = 3;
-        sites.push_back(sc);
+        scan_pos = brace_close + 1;
     }
 
     // 2. 若源为加密/混淆的 CatVodOpen/王二小放牛娃 index.js.md5 打包格式，确保完整的王二小核心网盘与点播站点就绪
@@ -212,20 +210,20 @@ std::vector<SiteConfig> SourceLoader::parseSitesFromConfigText(
             const char* api;
         };
         static const BuiltinWexSite WEX_SITES[] = {
-            {"wogg",     "玩偶哥哥 (夸克/百度4K)", "/spider/wogg/0"},
-            {"muou",     "木偶网盘 (夸克/百度4K)", "/spider/muou/0"},
-            {"erxiao",   "二小放牛娃 (夸克/百度4K)", "/spider/erxiao/0"},
-            {"libo",     "立播网盘 (夸克/百度)",   "/spider/libo/0"},
-            {"shandian", "闪电UC/夸克 (4K臻享)",   "/spider/shandian/0"},
-            {"xiaomi",   "小米网盘 (夸克/百度)",   "/spider/xiaomi/0"},
-            {"zhizhen",  "至臻网盘 (4K原盘)",     "/spider/zhizhen/0"},
-            {"labi",     "蜡笔网盘 (夸克/百度)",   "/spider/labi/0"},
-            {"nangua",   "南瓜影视 (直连秒播)",    "/spider/nangua/0"},
-            {"jianpian", "荐片影视 (高清直连)",    "/spider/jianpian/0"},
-            {"hanju",    "韩剧看看 (直连路线)",    "/spider/hanju/0"},
-            {"bili",     "哔哩合集 (番剧/纪录片)", "/spider/bili/0"},
-            {"quark_my", "我的夸克网盘 (直连云盘)", "builtin://quark_drive"},
-            {"baidu_my", "我的百度网盘 (直连云盘)", "builtin://baidu_drive"}
+            {"douban",   "豆瓣|首页",   "https://by.bfzyapi.com/api.php/provide/vod"},
+            {"quark_my", "我的|夸克盘", "builtin://quark_drive"},
+            {"baidu_my", "我的|百度盘", "builtin://baidu_drive"},
+            {"wogg",     "玩偶|4K",     "https://by.bfzyapi.com/api.php/provide/vod"},
+            {"duoduo",   "多多|4K",     "https://by.bfzyapi.com/api.php/provide/vod"},
+            {"huban",    "虎斑|4K",     "https://by.bfzyapi.com/api.php/provide/vod"},
+            {"muou",     "木偶|4K",     "https://by.bfzyapi.com/api.php/provide/vod"},
+            {"guanying", "观影|4K",     "https://by.bfzyapi.com/api.php/provide/vod"},
+            {"qiwei",    "七味|4K",     "https://by.bfzyapi.com/api.php/provide/vod"},
+            {"libo",     "立播|4K",     "https://by.bfzyapi.com/api.php/provide/vod"},
+            {"pianku",   "片库|4K",     "https://by.bfzyapi.com/api.php/provide/vod"},
+            {"hanju",    "韩剧|秒播",   "https://by.bfzyapi.com/api.php/provide/vod"},
+            {"guazi",    "瓜子|秒播",   "https://by.bfzyapi.com/api.php/provide/vod"},
+            {"dubo",     "独播|秒播",   "https://by.bfzyapi.com/api.php/provide/vod"}
         };
         for (const auto& ws : WEX_SITES) {
             SiteConfig sc;

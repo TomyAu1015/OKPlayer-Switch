@@ -65,8 +65,9 @@ QRLoginSession NetdiskAuth::startQuarkQRLogin() {
     std::string token = regexExtract(resp.body, "\"token\"\\s*:\\s*\"([^\"]+)\"");
     if (!token.empty()) {
         s.qr_token = token;
-        s.qr_url = "https://b.quark.cn/apps/q_login_quark/routes/index?token=" +
-                   token + "&client_id=532&v=1.2";
+        // 夸克 APP 扫码专用短链协议 (移植自 SwitchTVBox，彻底解决 b.quark.cn 报「出错了」)
+        s.qr_url = "https://su.quark.cn/4_eMHBJ?token=" + token +
+                   "&client_id=532&ssb=weblogin&uc_param_str=&uc_biz_str=S%3Acustom%7COPT%3ASAREA%400%7COPT%3AIMMERSIVE%401%7COPT%3ABACK_BTN_STYLE%400";
         s.state = QRLoginState::WAITING_SCAN;
         s.status_text = "请打开手机【夸克APP】扫一扫登录夸克网盘";
         generateQrMatrix(s.qr_url, s.qr_size, s.qr_modules);
@@ -74,7 +75,7 @@ QRLoginSession NetdiskAuth::startQuarkQRLogin() {
         s.state = QRLoginState::EXPIRED_OR_ERROR;
         s.qr_size = 0;
         s.qr_modules.clear();
-        s.status_text = "获取夸克二维码失败(" + (resp.error.empty() ? "网络异常" : resp.error) + ")，请按[A]重试或用局域网网页传Cookie";
+        s.status_text = "获取夸克二维码失败(" + (resp.error.empty() ? "网络异常" : resp.error) + ")，请按[A]或点刷新重试";
     }
     return s;
 }
@@ -84,9 +85,10 @@ bool NetdiskAuth::pollQuarkQRLogin(QRLoginSession& session, AppConfig& cfg) {
         session.state != QRLoginState::SCANNED_WAIT_CONFIRM) {
         return false;
     }
+    std::string req_id = HttpClient::generateUuidV4();
     std::string poll_url = "https://uop.quark.cn/cas/ajax/getServiceTicketByQrcodeToken"
                            "?client_id=532&v=1.2&token=" + session.qr_token +
-                           "&request_id=" + session.request_id;
+                           "&request_id=" + req_id;
     HttpResponse resp = HttpClient::get(poll_url, {{"User-Agent", QUARK_WEB_UA}, {"Referer", "https://pan.quark.cn/"}});
     if (!resp.ok()) return false;
 
@@ -94,8 +96,7 @@ bool NetdiskAuth::pollQuarkQRLogin(QRLoginSession& session, AppConfig& cfg) {
     std::string service_ticket = regexExtract(resp.body, "\"service_ticket\"\\s*:\\s*\"([^\"]+)\"");
 
     if (status_code == "2000000" && !service_ticket.empty()) {
-        std::string info_url = "https://pan.quark.cn/account/info?st=" + service_ticket +
-                               "&fr=pc&platform=pc";
+        std::string info_url = "https://pan.quark.cn/account/info?lw=scan&st=" + service_ticket;
         HttpResponse info_resp = HttpClient::get(
             info_url,
             {{"User-Agent", QUARK_WEB_UA}, {"Referer", "https://pan.quark.cn/"}}
@@ -103,9 +104,9 @@ bool NetdiskAuth::pollQuarkQRLogin(QRLoginSession& session, AppConfig& cfg) {
         std::string merged_cookie = HttpClient::mergeSetCookies(cfg.quark_cookie, resp.set_cookies);
         merged_cookie = HttpClient::mergeSetCookies(merged_cookie, info_resp.set_cookies);
 
-        // 追加 push/clouddrive 会话 Cookie (__puus)
+        // 调用 file/sort 触发夸克下发完整 __puus / __pus Cookie
         HttpResponse drive_resp = HttpClient::get(
-            "https://drive-pc.quark.cn/1/clouddrive/config?pr=ucpro&fr=pc",
+            "https://drive-pc.quark.cn/1/clouddrive/file/sort?pr=ucpro&fr=pc&pdir_fid=0&_page=1&_size=1",
             {{"User-Agent", QUARK_WEB_UA}, {"Origin", "https://pan.quark.cn"}, {"Referer", "https://pan.quark.cn/"}, {"Cookie", merged_cookie}}
         );
         merged_cookie = HttpClient::mergeSetCookies(merged_cookie, drive_resp.set_cookies);
@@ -123,7 +124,7 @@ bool NetdiskAuth::pollQuarkQRLogin(QRLoginSession& session, AppConfig& cfg) {
         session.status_text = "已扫码，请在手机夸克APP上点击【确认登录】";
     } else if (status_code == "50004002") {
         session.state = QRLoginState::EXPIRED_OR_ERROR;
-        session.status_text = "二维码已过期，请按 [A] 重新获取二维码";
+        session.status_text = "二维码已过期，请按 [A] 或点击刷新重新获取";
     }
     return false;
 }
@@ -333,12 +334,31 @@ QRLoginSession NetdiskAuth::startBaiduQRLogin() {
     s.request_id = HttpClient::generateUuidV4();
     s.created_ms = HttpClient::currentTimeMillis();
 
-    std::string api = "https://passport.baidu.com/v2/api/getqrcode?lp=pc&qrloginfrom=pc";
+    std::string api = "https://passport.baidu.com/v2/api/getqrcode?lp=pc&qrloginfrom=pc&tpl=netdisk&apiver=v3&gid=" +
+                      s.request_id + "&tt=" + std::to_string(s.created_ms) + "&callback=bd__cbs__qr";
     HttpResponse resp = HttpClient::get(api, {{"User-Agent", QUARK_WEB_UA}, {"Referer", "https://pan.baidu.com/"}});
     std::string sign = regexExtract(resp.body, "\"sign\"\\s*:\\s*\"([^\"]+)\"");
+    std::string imgurl = regexExtract(resp.body, "\"imgurl\"\\s*:\\s*\"([^\"]+)\"");
     if (!sign.empty()) {
         s.qr_token = sign;
-        s.qr_url = "https://wappass.baidu.com/wp/?qrlogin=&sign=" + sign + "&lp=pc&qrloginfrom=pc";
+        // 处理 imgurl 中的反斜杠转义并补全 https://
+        std::string clean_img;
+        for (size_t i = 0; i < imgurl.size(); ++i) {
+            if (imgurl[i] == '\\' && i + 1 < imgurl.size() && imgurl[i + 1] == '/') {
+                continue;
+            }
+            clean_img.push_back(imgurl[i]);
+        }
+        if (!clean_img.empty() && clean_img.rfind("http", 0) != 0) {
+            clean_img = "https://" + clean_img;
+        }
+        if (!clean_img.empty()) {
+            HttpResponse img_resp = HttpClient::get(clean_img, {{"User-Agent", QUARK_WEB_UA}, {"Referer", "https://pan.baidu.com/"}});
+            if (img_resp.ok() && img_resp.body.size() > 64) {
+                s.qr_png_bytes = std::move(img_resp.body);
+            }
+        }
+        s.qr_url = "https://wappass.baidu.com/wp/?qrlogin=1&tpl=netdisk&sign=" + sign;
         s.state = QRLoginState::WAITING_SCAN;
         s.status_text = "请打开手机【百度网盘APP】扫一扫登录百度网盘";
         generateQrMatrix(s.qr_url, s.qr_size, s.qr_modules);
@@ -346,7 +366,7 @@ QRLoginSession NetdiskAuth::startBaiduQRLogin() {
         s.state = QRLoginState::EXPIRED_OR_ERROR;
         s.qr_size = 0;
         s.qr_modules.clear();
-        s.status_text = "获取百度二维码失败(" + (resp.error.empty() ? "网络异常" : resp.error) + ")，请按[A]重试或用局域网网页传Cookie";
+        s.status_text = "获取百度二维码失败(" + (resp.error.empty() ? "网络异常" : resp.error) + ")，请按[A]或点刷新重试";
     }
     return s;
 }
@@ -357,12 +377,11 @@ bool NetdiskAuth::pollBaiduQRLogin(QRLoginSession& session, AppConfig& cfg) {
         return false;
     }
     std::string poll_url = "https://passport.baidu.com/channel/unicast?channel_id=" +
-                           session.qr_token + "&callback=okcb&_=" +
+                           session.qr_token + "&tpl=netdisk&apiver=v3&callback=bd__cbs__poll&tt=" +
                            std::to_string(HttpClient::currentTimeMillis());
     HttpResponse resp = HttpClient::get(poll_url, {{"User-Agent", QUARK_WEB_UA}, {"Referer", "https://pan.baidu.com/"}}, 8000);
     if (!resp.ok() || resp.body.empty()) return false;
 
-    // channel_v 内含转义 JSON: \"status\":0,\"v\":\"<temp_bduss>\"
     std::string unescaped;
     for (size_t i = 0; i < resp.body.size(); ++i) {
         if (resp.body[i] == '\\' && i + 1 < resp.body.size() && resp.body[i + 1] == '"') {
@@ -382,9 +401,11 @@ bool NetdiskAuth::pollBaiduQRLogin(QRLoginSession& session, AppConfig& cfg) {
         return false;
     }
     if (status == "0" && !temp_v.empty()) {
-        std::string login_url = "https://passport.baidu.com/v3/login/main/qrbdusslogin?v=" +
-                                std::to_string(HttpClient::currentTimeMillis()) +
-                                "&bduss=" + temp_v + "&u=https%3A%2F%2Fpan.baidu.com%2Fdisk%2Fmain&loginVersion=v4&qrcode=1&tpl=netdisk&apiver=v3";
+        std::string now_s = std::to_string(HttpClient::currentTimeMillis());
+        std::string login_url = "https://passport.baidu.com/v3/login/main/qrbdusslogin?tpl=netdisk&apiver=v3"
+                                "&qrcode=1&loginVersion=v4&alg=v3&bduss=" + temp_v +
+                                "&gid=" + session.request_id + "&time=" + now_s +
+                                "&traceid=&callback=bd__cbs__login&u=https%253A%252F%252Fpan.baidu.com%252Fdisk%252Fmain";
         HttpResponse lr = HttpClient::get(login_url, {{"User-Agent", QUARK_WEB_UA}, {"Referer", "https://pan.baidu.com/"}});
 
         std::string bduss = regexExtract(lr.body, "\"bduss\"\\s*:\\s*\"([^\"]+)\"");
@@ -398,6 +419,13 @@ bool NetdiskAuth::pollBaiduQRLogin(QRLoginSession& session, AppConfig& cfg) {
         if (!netdisk_stoken.empty() && merged_cookie.find("STOKEN=") == std::string::npos) {
             merged_cookie += (merged_cookie.empty() ? "" : "; ") + std::string("STOKEN=") + netdisk_stoken;
         }
+
+        // 访问盘主页与 gettemplatevariable 进一步激活网盘 Web 会话 Cookie
+        HttpResponse disk_resp = HttpClient::get(
+            "https://pan.baidu.com/disk/main",
+            {{"User-Agent", QUARK_WEB_UA}, {"Referer", "https://passport.baidu.com/"}, {"Cookie", merged_cookie}}
+        );
+        merged_cookie = HttpClient::mergeSetCookies(merged_cookie, disk_resp.set_cookies);
 
         cfg.baidu_bduss = bduss;
         cfg.baidu_stoken = netdisk_stoken;

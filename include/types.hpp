@@ -117,6 +117,7 @@ struct QRLoginSession {
     QRLoginState state = QRLoginState::IDLE;
     std::string qr_token;      // Quark token or Baidu sign
     std::string qr_url;        // URL encoded into the QR matrix
+    std::string qr_png_bytes;  // Official Baidu PNG image bytes when fetched directly from passport.baidu.com
     std::string request_id;
     std::string status_text;
     uint64_t created_ms = 0;

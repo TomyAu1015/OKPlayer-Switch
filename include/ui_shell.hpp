@@ -11,30 +11,34 @@
 #include <unordered_map>
 #include <mutex>
 #include <atomic>
-#include <thread>
 
 namespace okplayer {
 
 enum class TopTab {
-    HOME_VOD = 0,     // 首页点播 (王二小放牛娃 index.js.md5 站点)
-    CATEGORIES = 1,   // 分类筛选
-    SEARCH = 2,       // 聚合搜索 / 分享链接直解
-    QUARK_DRIVE = 3,  // 夸克网盘 (扫码登录 + 个人云盘直连)
-    BAIDU_DRIVE = 4,  // 百度网盘 (扫码登录 + 个人云盘直连)
-    SETTINGS = 5      // 接口源地址直接填写 + 局域网远程服务
+    HOME_VOD = 0,     // 发现·首页 (平泽唯 Yui)
+    CATEGORIES = 1,   // 影视·分类 (秋山澪 Mio)
+    SEARCH = 2,       // 聚合·搜索 (田井中律 Ritsu)
+    QUARK_DRIVE = 3,  // 夸克·网盘 (琴吹紬 Mugi)
+    BAIDU_DRIVE = 4,  // 百度·网盘 (中野梓 Azusa)
+    SETTINGS = 5      // 配置·中心 (HTT 放课后茶会)
 };
 
 enum class ModalState {
     NONE = 0,
     VOD_DETAIL = 1,       // 剧集详情与选集弹窗 (夸克4K / 百度网盘 / 直连线路切换)
     QR_LOGIN = 2,         // 夸克/百度网盘 屏幕二维码扫码弹窗
-    VIDEO_PLAYING = 3     // 全屏视频播放界面 (支持摇杆快进/音量/倍速/清晰度切换)
+    VIDEO_PLAYING = 3     // 全屏视频播放界面 (支持触屏 + 摇杆快进/音量/倍速/清晰度切换)
 };
 
 struct CachedTextTex {
     SDL_Texture* tex = nullptr;
     int w = 0;
     int h = 0;
+};
+
+struct HitZone {
+    int id = 0;
+    SDL_Rect rect{0, 0, 0, 0};
 };
 
 class SwitchPlayerShell {
@@ -51,6 +55,7 @@ public:
 
 private:
     void handleGamepadInput();
+    void handleTouchOrClick(int tx, int ty);
     void updateFrame(uint64_t now_ms);
     void renderFrame();
 
@@ -69,15 +74,18 @@ private:
     void drawRoundedOutline(int x, int y, int w, int h, int radius, int thickness, SDL_Color color);
     void drawText(const std::string& text, int x, int y, SDL_Color color, bool large = false);
     void drawTextCentered(const std::string& text, int cx, int y, SDL_Color color, bool large = false);
+    void drawTextClipped(const std::string& text, int x, int y, int max_px_width, SDL_Color color, bool large = false);
     void clearTextCache();
 
     // 业务动作
     void reloadSourceUrlAsync(const std::string& new_url);
-    void refreshCurrentSiteContent();
+    void refreshCurrentSiteContentAsync();
+    void openVodDetailAsync(const VodItem& v);
     void promptEditSourceUrl();
     void promptSearchKeyword();
     void openQrLoginModal(NetdiskProvider provider);
     void startPlayback(const VodItem& vod, const std::string& flag_name, int ep_index);
+    void switchToTab(TopTab tab);
 
     SDL_Window* window_ = nullptr;
     SDL_Renderer* renderer_ = nullptr;
@@ -89,7 +97,13 @@ private:
     SDL_Texture* kon_bg_tex_ = nullptr;
     SDL_Texture* kon_banner_tex_ = nullptr;
     SDL_Texture* kon_tonchan_tex_ = nullptr;
+    SDL_Texture* kon_htt_heart_tex_ = nullptr;
+    SDL_Texture* kon_tea_pink_tex_ = nullptr;
     SDL_Texture* kon_card_tex_[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+    SDL_Texture* kon_char_idle_[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+    SDL_Texture* kon_char_active_[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+    SDL_Texture* active_qr_png_tex_ = nullptr;
+    std::string active_qr_png_token_;
 
     bool running_ = true;
     AppConfig config_;
@@ -100,10 +114,16 @@ private:
     // 异步加载与线程安全锁
     std::mutex data_mutex_;
     std::atomic<bool> source_loading_{false};
+    std::atomic<bool> content_loading_{false};
     std::atomic<bool> qr_polling_{false};
     std::atomic<bool> qr_loading_{false};
     bool pending_source_apply_ = false;
     LoadedSourceBundle pending_bundle_;
+    bool pending_content_apply_ = false;
+    std::vector<CategoryItem> pending_categories_;
+    std::vector<VodItem> pending_vods_;
+    bool pending_detail_apply_ = false;
+    VodItem pending_detail_vod_;
 
     TopTab current_tab_ = TopTab::HOME_VOD;
     ModalState modal_state_ = ModalState::NONE;
@@ -115,6 +135,7 @@ private:
     int selected_ep_idx_ = 0;
     int selected_quality_idx_ = 0;
     int settings_focus_idx_ = 0;
+    bool touch_down_prev_ = false;
 
     std::vector<CategoryItem> current_categories_;
     std::vector<VodItem> current_vods_;
