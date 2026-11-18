@@ -21,6 +21,9 @@ jobs:
           if [ -f romfs_assets.zip ]; then
             unzip -q -o romfs_assets.zip -d .
           fi
+          export PKG_CONFIG_PATH=/opt/devkitpro/portlibs/switch/lib/pkgconfig
+          FFMPEG_LIBS=$(pkg-config --libs libavformat libavcodec libswscale libswresample libavutil 2>/dev/null || echo "-lavformat -lavcodec -lswscale -lswresample -lavutil -ldav1d")
+          sed -i "s|-lavformat -lavcodec -lswscale -lswresample -lavutil|${FFMPEG_LIBS} -ldav1d|g" Makefile
           sed -i 's/ -lzstd/ -lbz2/g' Makefile
           sed -i 's|-f \$(CURDIR)/Makefile$|-f $(CURDIR)/Makefile all|' Makefile
           make clean
