@@ -20,7 +20,7 @@ jobs:
         run: |
           apt-get update && apt-get install -y python3 unzip zip
           dkp-pacman -Syu --noconfirm \
-            libnx switch-curl switch-mbedtls switch-zlib \
+            libnx switch-curl switch-mbedtls switch-zlib switch-bzip2 \
             switch-sdl2 switch-sdl2_ttf switch-sdl2_image \
             switch-freetype switch-harfbuzz switch-libpng switch-libjpeg-turbo switch-libwebp \
             switch-glad switch-mesa switch-libdrm_nouveau
@@ -30,7 +30,7 @@ jobs:
           if [ -f romfs_assets.zip ]; then
             unzip -q -o romfs_assets.zip -d .
           fi
-          sed -i 's/ -lzstd//g' Makefile
+          sed -i 's/ -lzstd/ -lbz2/g' Makefile
           sed -i 's|-f \$(CURDIR)/Makefile$|-f $(CURDIR)/Makefile all|' Makefile
           make clean
           make -j$(nproc)
