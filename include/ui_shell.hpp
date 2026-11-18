@@ -85,6 +85,12 @@ private:
     TTF_Font* font_large_ = nullptr;
     std::unordered_map<std::string, CachedTextTex> text_cache_;
 
+    // 轻音少女 (K-ON! HTT) 主题纹理缓存
+    SDL_Texture* kon_bg_tex_ = nullptr;
+    SDL_Texture* kon_banner_tex_ = nullptr;
+    SDL_Texture* kon_tonchan_tex_ = nullptr;
+    SDL_Texture* kon_card_tex_[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+
     bool running_ = true;
     AppConfig config_;
     LoadedSourceBundle bundle_;

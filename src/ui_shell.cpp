@@ -1,4 +1,5 @@
 #include "ui_shell.hpp"
+#include <SDL2/SDL_image.h>
 #include "http_client.hpp"
 #include <cstring>
 #include <cstdio>
@@ -114,6 +115,7 @@ bool SwitchPlayerShell::init() {
         return false;
     }
     TTF_Init();
+    IMG_Init(IMG_INIT_PNG);
 
     window_ = SDL_CreateWindow(
         "OK影视-Switch",
@@ -137,6 +139,25 @@ bool SwitchPlayerShell::init() {
         font_large_   = TTF_OpenFontRW(rw2, 1, 25);
     }
 #endif
+
+    // 加载轻音少女 (K-ON!) 主题美化纹理
+    auto loadThemeTex = [&](const char* rel_path) -> SDL_Texture* {
+        std::string p1 = std::string("romfs:/") + rel_path;
+        SDL_Texture* t = IMG_LoadTexture(renderer_, p1.c_str());
+        if (!t) {
+            std::string p2 = std::string("romfs/") + rel_path;
+            t = IMG_LoadTexture(renderer_, p2.c_str());
+        }
+        if (t) SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
+        return t;
+    };
+    kon_bg_tex_ = loadThemeTex("theme/kon_bg.png");
+    kon_banner_tex_ = loadThemeTex("theme/kon_banner.png");
+    kon_tonchan_tex_ = loadThemeTex("theme/kon_tonchan.png");
+    for (int i = 0; i < 5; ++i) {
+        std::string cp = "theme/kon_card_" + std::to_string(i) + ".png";
+        kon_card_tex_[i] = loadThemeTex(cp.c_str());
+    }
 
     // 先立刻渲染第一帧主界面，彻底消除启动黑屏 1~2 秒的问题
     toast_msg_ = "正在后台加载影视源，请稍候...";
@@ -682,6 +703,13 @@ void SwitchPlayerShell::renderSiteAndCategorySidebar() {
         drawText(utf8Truncate(bundle_.sites[i].name, 13), 24, sy + 2,
                  sel ? SDL_Color{255, 255, 255, 255} : SDL_Color{176, 190, 210, 255});
     }
+    if (kon_tonchan_tex_) {
+        drawRoundedRect(14, 578, 208, 68, 10, {22, 28, 44, 210});
+        SDL_Rect dst{22, 584, 56, 56};
+        SDL_RenderCopy(renderer_, kon_tonchan_tex_, nullptr, &dst);
+        drawText("放课后茶会", 86, 592, {255, 196, 224, 255});
+        drawText("K-ON! 主题已启用", 86, 616, {165, 195, 230, 255});
+    }
 }
 
 void SwitchPlayerShell::renderVodGrid() {
@@ -720,10 +748,17 @@ void SwitchPlayerShell::renderVodGrid() {
             drawRoundedOutline(cx, cy, card_w, card_h, 12, 3, {88, 178, 255, 255});
         }
 
-        // 海报封面区（多彩渐变艺术底 + 居中片名大字）
+        // 海报封面区（轻音少女主题封面底图 + 暗色渐变叠层）
         SDL_Color art = cardAccentColor(current_vods_[i].vod_name);
         drawRoundedRect(cx + 8, cy + 8, card_w - 16, 166, 9, art);
-        drawRect(cx + 8, cy + 138, card_w - 16, 36, {14, 18, 28, 120});
+        SDL_Texture* card_tex = kon_card_tex_[i % 5];
+        if (card_tex) {
+            SDL_SetTextureAlphaMod(card_tex, focused ? 215 : 155);
+            SDL_Rect art_dst{cx + 10, cy + 10, card_w - 20, 162};
+            SDL_RenderCopy(renderer_, card_tex, nullptr, &art_dst);
+            drawRect(cx + 10, cy + 10, card_w - 20, 162, {12, 16, 26, 90});
+        }
+        drawRect(cx + 8, cy + 136, card_w - 16, 38, {12, 16, 26, 165});
 
         // 清晰度角标胶囊
         if (!current_vods_[i].vod_remarks.empty()) {
@@ -784,6 +819,10 @@ void SwitchPlayerShell::renderSettingsPanel() {
     }
 
     drawText("手机/电脑浏览器局域网快捷管理地址: " + lan_server_.getLanUrl(), 284, 598, {63, 185, 80, 255});
+    if (kon_banner_tex_) {
+        SDL_Rect bdst{1080, 588, 150, 48};
+        SDL_RenderCopy(renderer_, kon_banner_tex_, nullptr, &bdst);
+    }
 }
 
 void SwitchPlayerShell::renderDetailModal() {
@@ -910,6 +949,11 @@ void SwitchPlayerShell::renderBottomGamepadLegend() {
 void SwitchPlayerShell::renderFrame() {
     SDL_SetRenderDrawColor(renderer_, 12, 16, 24, 255);
     SDL_RenderClear(renderer_);
+    if (kon_bg_tex_ && modal_state_ != ModalState::VIDEO_PLAYING) {
+        SDL_SetTextureAlphaMod(kon_bg_tex_, 38);
+        SDL_Rect full{0, 0, 1280, 720};
+        SDL_RenderCopy(renderer_, kon_bg_tex_, nullptr, &full);
+    }
 
     if (modal_state_ == ModalState::VIDEO_PLAYING) {
         renderFullscreenPlayer();
@@ -936,6 +980,13 @@ void SwitchPlayerShell::renderFrame() {
 void SwitchPlayerShell::shutdown() {
     lan_server_.stop();
     clearTextCache();
+    if (kon_bg_tex_) SDL_DestroyTexture(kon_bg_tex_);
+    if (kon_banner_tex_) SDL_DestroyTexture(kon_banner_tex_);
+    if (kon_tonchan_tex_) SDL_DestroyTexture(kon_tonchan_tex_);
+    for (int i = 0; i < 5; ++i) {
+        if (kon_card_tex_[i]) SDL_DestroyTexture(kon_card_tex_[i]);
+    }
+    IMG_Quit();
     if (font_regular_) TTF_CloseFont(font_regular_);
     if (font_large_) TTF_CloseFont(font_large_);
     if (renderer_) SDL_DestroyRenderer(renderer_);
