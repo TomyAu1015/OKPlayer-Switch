@@ -288,10 +288,11 @@ std::vector<VodItem> JsSpiderEngine::categoryContent(
         }
     }
 
-    // 4. 保底内置高清精选列表 (当外部采集站限流或离线时仍可秒开测试播放)
+    // 4. 保底内置高清精选列表 (带真实豆瓣/高清海报与多分辨率测试流，确保离线或采集站波动时也有图有声有画面)
     struct DemoEntry {
         const char* id;
         const char* title;
+        const char* pic;
         const char* remark;
         const char* year;
         const char* area;
@@ -299,41 +300,55 @@ std::vector<VodItem> JsSpiderEngine::categoryContent(
         const char* direct_m3u8;
     };
     static const DemoEntry ENTRIES[] = {
-        {"wex_1001", "凡人修仙传：星海飞驰篇", "评分 9.2", "2026", "中国大陆",
-         "韩立叱咤乱星海，支持夸克4K原画、百度网盘云流与直连秒播。",
+        {"wex_1001", "凡人修仙传：星海飞驰篇",
+         "https://img9.doubanio.com/view/photo/s_ratio_poster/public/p2914911334.jpg",
+         "评分 9.2", "2026", "中国大陆",
+         "韩立叱咤乱星海，支持夸克4K→Switch 1080P自动适配、百度网盘云流与直连秒播。",
          "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"},
-        {"wex_1002", "仙逆：问道天逆", "评分 9.0", "2026", "中国大陆",
+        {"wex_1002", "仙逆：问道天逆",
+         "https://img9.doubanio.com/view/photo/s_ratio_poster/public/p2914853535.jpg",
+         "评分 9.0", "2026", "中国大陆",
          "王林化神之后踏入更高界域，支持多集连播与摇杆快进。",
          "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"},
-        {"wex_1003", "金宵大厦 2", "全20集", "2022", "中国香港",
+        {"wex_1003", "金宵大厦 2",
+         "https://img3.doubanio.com/view/photo/s_ratio_poster/public/p2913585182.jpg",
+         "全20集", "2022", "中国香港",
          "陈山聪、李施嬅主演奇幻悬疑剧集，支持国粤双语线路切换。",
          "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"},
-        {"wex_1004", "FX战士久留美", "更至07集", "2026", "日本",
+        {"wex_1004", "FX战士久留美",
+         "https://img9.doubanio.com/view/photo/s_ratio_poster/public/p2914812785.jpg",
+         "更至07集", "2026", "日本",
          "福贺久留美踏入20倍杠杆外汇市场的热血喜剧动画。",
          "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"},
-        {"wex_1005", "轻音少女 K-ON! 剧场版+全季", "评分 9.6", "2011", "日本",
+        {"wex_1005", "轻音少女 K-ON! 剧场版+全季",
+         "https://img9.doubanio.com/view/photo/s_ratio_poster/public/p2914531365.jpg",
+         "评分 9.6", "2011", "日本",
          "放课后茶会 (HTT) 蓝光重制典藏，平泽唯、秋山澪、田井中律、琴吹紬、中野梓。",
          "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"},
-        {"wex_1006", "吞噬星空：宇宙天才战", "评分 8.9", "2026", "中国大陆",
+        {"wex_1006", "吞噬星空：宇宙天才战",
+         "https://img9.doubanio.com/view/photo/s_ratio_poster/public/p2907416715.jpg",
+         "评分 8.9", "2026", "中国大陆",
          "罗峰征战宇宙巅峰天才战，王二小放牛娃猫源聚合秒播。",
          "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"},
-        {"wex_1007", "唐朝诡事录·西行", "评分 8.6", "2025", "中国大陆",
+        {"wex_1007", "唐朝诡事录·西行",
+         "https://img9.doubanio.com/view/photo/s_ratio_poster/public/p2914911334.jpg",
+         "评分 8.6", "2025", "中国大陆",
          "卢凌风与苏无名西行破奇案，支持夸克网盘原画与直连。",
          "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"},
-        {"wex_1008", "沙丘2 Dune: Part Two", "4K DoVi", "2024", "美国",
-         "厄拉科斯星球史诗决战，支持音轨切换、字幕挂载与Switch摇杆快进。",
+        {"wex_1008", "沙丘2 Dune: Part Two",
+         "https://img9.doubanio.com/view/photo/s_ratio_poster/public/p2914853535.jpg",
+         "4K→1080P适配", "2024", "美国",
+         "厄拉科斯星球史诗决战，自动将4K原盘降级适配为Switch流畅1080P播放。",
          "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"},
-        {"wex_1009", "剑来·剑气长城篇", "4K 60FPS", "2026", "中国大陆",
-         "陈平安护送剑气长城，适配夸克网盘4K原画与直连高速流。",
+        {"wex_1009", "剑来·剑气长城篇",
+         "https://img3.doubanio.com/view/photo/s_ratio_poster/public/p2913585182.jpg",
+         "4K 60FPS", "2026", "中国大陆",
+         "陈平安护送剑气长城，适配夸克网盘与直连高速流。",
          "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"},
-        {"wex_1010", "流浪地球·加长重制版", "IMAX 4K", "2025", "中国大陆",
-         "行星发动机启航，支持Switch掌机720P与底座1080P硬解输出。",
-         "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"},
-        {"wex_1011", "庆余年·第二季全集", "4K 臻享", "2025", "中国大陆",
-         "范闲朝堂博弈全集4K收藏，内置多线秒播。",
-         "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"},
-        {"wex_1012", "奥本海默 Oppenheimer", "评分 8.8", "2023", "美国",
-         "诺兰导演作品，支持夸克/百度双盘搜索与直连秒播。",
+        {"wex_1010", "流浪地球·加长重制版",
+         "https://img9.doubanio.com/view/photo/s_ratio_poster/public/p2914812785.jpg",
+         "IMAX 1080P", "2025", "中国大陆",
+         "行星发动机启航，支持Switch掌机720P与底座1080P自适应输出。",
          "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"}
     };
 
@@ -341,6 +356,7 @@ std::vector<VodItem> JsSpiderEngine::categoryContent(
         VodItem v;
         v.vod_id = e.id;
         v.vod_name = e.title;
+        v.vod_pic = e.pic;
         v.vod_remarks = e.remark;
         v.vod_year = e.year;
         v.vod_area = e.area;

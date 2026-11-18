@@ -1,7 +1,6 @@
 #include "netdisk_auth.hpp"
 #include "http_client.hpp"
 #include "source_loader.hpp"
-#include <regex>
 #include <sstream>
 #include <algorithm>
 #include <cstring>
@@ -23,14 +22,83 @@ static const char* QUARK_CLIENT_UA =
 static const char* BAIDU_PAN_UA =
     "netdisk;P2SP;3.0.10.22;Windows;10.0.19045";
 
-std::string regexExtract(const std::string& text, const std::string& pattern, int group = 1) {
-    try {
-        std::regex re(pattern);
-        std::smatch m;
-        if (std::regex_search(text, m, re) && static_cast<int>(m.size()) > group) {
-            return m[group].str();
+// 零正则 JSON 字符串提取 (彻底避免 Switch 上 std::regex 异常或栈溢出)
+std::string jsonGetStr(const std::string& text, const std::string& key) {
+    std::string pat = "\"" + key + "\"";
+    size_t pos = text.find(pat);
+    if (pos == std::string::npos) return "";
+    size_t p = pos + pat.size();
+    while (p < text.size() && (text[p] == ' ' || text[p] == '\t' || text[p] == ':')) ++p;
+    if (p >= text.size()) return "";
+    if (text[p] == '"') {
+        ++p;
+        std::string out;
+        while (p < text.size()) {
+            if (text[p] == '\\' && p + 1 < text.size()) {
+                char esc = text[p + 1];
+                if (esc == '/' || esc == '"' || esc == '\\') out.push_back(esc);
+                else out.push_back(esc);
+                p += 2;
+            } else if (text[p] == '"') {
+                return out;
+            } else {
+                out.push_back(text[p++]);
+            }
         }
-    } catch (...) {}
+    } else {
+        size_t e = p;
+        while (e < text.size() && (std::isalnum(static_cast<unsigned char>(text[e])) || text[e] == '_' || text[e] == '-')) ++e;
+        return text.substr(p, e - p);
+    }
+    return "";
+}
+
+std::string extractShareId(const std::string& url, const std::string& prefix) {
+    size_t pos = url.find(prefix);
+    if (pos == std::string::npos) return "";
+    size_t p = pos + prefix.size();
+    size_t e = p;
+    while (e < url.size() && (std::isalnum(static_cast<unsigned char>(url[e])) || url[e] == '_' || url[e] == '-')) ++e;
+    return url.substr(p, e - p);
+}
+
+std::string regexExtract(const std::string& text, const std::string& pattern, int group = 1) {
+    (void)group;
+    // Fast-path common keys without std::regex
+    if (pattern.find("\"token\"") != std::string::npos) return jsonGetStr(text, "token");
+    if (pattern.find("\"status\"") != std::string::npos) return jsonGetStr(text, "status");
+    if (pattern.find("\"service_ticket\"") != std::string::npos) return jsonGetStr(text, "service_ticket");
+    if (pattern.find("\"nickname\"") != std::string::npos) return jsonGetStr(text, "nickname");
+    if (pattern.find("\"sign\"") != std::string::npos) return jsonGetStr(text, "sign");
+    if (pattern.find("\"imgurl\"") != std::string::npos) return jsonGetStr(text, "imgurl");
+    if (pattern.find("\"v\"") != std::string::npos) return jsonGetStr(text, "v");
+    if (pattern.find("\"bduss\"") != std::string::npos) return jsonGetStr(text, "bduss");
+    if (pattern.find("\"displayName\"") != std::string::npos) return jsonGetStr(text, "displayName");
+    if (pattern.find("\"baidu_name\"") != std::string::npos) return jsonGetStr(text, "baidu_name");
+    if (pattern.find("\"netdisk_name\"") != std::string::npos) return jsonGetStr(text, "netdisk_name");
+    if (pattern.find("\"stoken\"") != std::string::npos) return jsonGetStr(text, "stoken");
+    if (pattern.find("\"task_id\"") != std::string::npos) return jsonGetStr(text, "task_id");
+    if (pattern.find("\"download_url\"") != std::string::npos) return jsonGetStr(text, "download_url");
+    if (pattern.find("\"share_fid_token\"") != std::string::npos) return jsonGetStr(text, "share_fid_token");
+    if (pattern.find("\"path\"") != std::string::npos) return jsonGetStr(text, "path");
+    if (pattern.find("\"size\"") != std::string::npos) return jsonGetStr(text, "size");
+    if (pattern.find("\"uk\"") != std::string::npos) return jsonGetStr(text, "uk");
+    if (pattern.find("\"shareid\"") != std::string::npos) return jsonGetStr(text, "shareid");
+    if (pattern.find("/s/1") != std::string::npos) return extractShareId(text, "/s/1");
+    if (pattern.find("/s/") != std::string::npos) return extractShareId(text, "/s/");
+    if (pattern.find("surl=") != std::string::npos) return extractShareId(text, "surl=");
+    if (pattern.find("pwd=") != std::string::npos) return extractShareId(text, "pwd=");
+    if (pattern.find("netdisk#") != std::string::npos) return extractShareId(text, "netdisk#");
+    if (pattern.find("save_as_top_fids") != std::string::npos) {
+        size_t pos = text.find("save_as_top_fids");
+        if (pos != std::string::npos) {
+            size_t q1 = text.find('"', pos + 18);
+            if (q1 != std::string::npos) {
+                size_t q2 = text.find('"', q1 + 1);
+                if (q2 != std::string::npos) return text.substr(q1 + 1, q2 - q1 - 1);
+            }
+        }
+    }
     return "";
 }
 
@@ -173,20 +241,24 @@ std::vector<NetdiskFileItem> NetdiskAuth::listQuarkPersonalFiles(
     );
     if (!resp.ok()) return items;
 
-    std::regex item_re("\\{[^{}]*?\"fid\"\\s*:\\s*\"([^\"]+)\"[^{}]*?\"file_name\"\\s*:\\s*\"([^\"]+)\"[^{}]*?\\}");
-    for (auto it = std::sregex_iterator(resp.body.begin(), resp.body.end(), item_re);
-         it != std::sregex_iterator(); ++it) {
-        std::string block = (*it)[0].str();
+    size_t pos = 0;
+    while (pos < resp.body.size() && items.size() < 100) {
+        size_t f_pos = resp.body.find("\"fid\"", pos);
+        if (f_pos == std::string::npos) break;
+        size_t end_b = resp.body.find('}', f_pos);
+        if (end_b == std::string::npos) end_b = resp.body.size();
+        std::string block = resp.body.substr(f_pos, end_b - f_pos + 1);
         NetdiskFileItem fi;
-        fi.fid = (*it)[1].str();
-        fi.file_name = (*it)[2].str();
+        fi.fid = jsonGetStr(block, "fid");
+        fi.file_name = jsonGetStr(block, "file_name");
         fi.pdir_fid = pdir_fid;
         fi.is_dir = (block.find("\"dir\":true") != std::string::npos ||
                      block.find("\"file_type\":0") != std::string::npos);
         fi.is_video = !fi.is_dir && isVideoFilename(fi.file_name);
-        std::string sz = regexExtract(block, "\"size\"\\s*:\\s*(\\d+)");
-        if (!sz.empty()) fi.size_bytes = std::stoll(sz);
-        items.push_back(fi);
+        if (!fi.fid.empty() && !fi.file_name.empty()) {
+            items.push_back(fi);
+        }
+        pos = end_b + 1;
     }
     return items;
 }
@@ -227,19 +299,25 @@ std::vector<NetdiskFileItem> NetdiskAuth::listQuarkShareFiles(
     HttpResponse dr = HttpClient::get(detail_api, hdrs);
     if (!dr.ok()) return items;
 
-    std::regex item_re("\\{[^{}]*?\"fid\"\\s*:\\s*\"([^\"]+)\"[^{}]*?\"file_name\"\\s*:\\s*\"([^\"]+)\"[^{}]*?\\}");
-    for (auto it = std::sregex_iterator(dr.body.begin(), dr.body.end(), item_re);
-         it != std::sregex_iterator(); ++it) {
-        std::string block = (*it)[0].str();
+    size_t pos = 0;
+    while (pos < dr.body.size() && items.size() < 100) {
+        size_t f_pos = dr.body.find("\"fid\"", pos);
+        if (f_pos == std::string::npos) break;
+        size_t end_b = dr.body.find('}', f_pos);
+        if (end_b == std::string::npos) end_b = dr.body.size();
+        std::string block = dr.body.substr(f_pos, end_b - f_pos + 1);
         NetdiskFileItem fi;
-        fi.fid = (*it)[1].str();
-        fi.file_name = (*it)[2].str();
+        fi.fid = jsonGetStr(block, "fid");
+        fi.file_name = jsonGetStr(block, "file_name");
         fi.pdir_fid = pdir_fid;
-        fi.share_fid_token = regexExtract(block, "\"share_fid_token\"\\s*:\\s*\"([^\"]+)\"");
+        fi.share_fid_token = jsonGetStr(block, "share_fid_token");
         fi.is_dir = (block.find("\"dir\":true") != std::string::npos ||
                      block.find("\"file_type\":0") != std::string::npos);
         fi.is_video = !fi.is_dir && isVideoFilename(fi.file_name);
-        items.push_back(fi);
+        if (!fi.fid.empty() && !fi.file_name.empty()) {
+            items.push_back(fi);
+        }
+        pos = end_b + 1;
     }
     return items;
 }
@@ -288,29 +366,45 @@ PlayResult NetdiskAuth::resolveQuarkPlayUrl(
         }
     }
 
-    // 1. 请求夸克 4K/原画高速直链 (使用 QUARK_CLIENT_UA 绕过 23018 限速错误)
+    // 1. 优先请求夸克云端 HLS 多码率转码流 (Switch 硬件适配优先：优先排布 super/high 1080P/720P H264 流，避免 4K HEVC 10bit 卡顿)
+    std::string play_api = "https://drive-pc.quark.cn/1/clouddrive/file/v2/play?pr=ucpro&fr=pc";
+    std::string play_body = "{\"fid\":\"" + target_fid + "\",\"resolutions\":\"super,high,normal,low,2k,4k\",\"supports\":\"m3u8,fmp4\"}";
+    HttpResponse pr = HttpClient::postJson(play_api, play_body, hdrs);
+    size_t scan_p = 0;
+    while (scan_p < pr.body.size()) {
+        size_t r_pos = pr.body.find("\"resolution\"", scan_p);
+        if (r_pos == std::string::npos) break;
+        size_t end_b = pr.body.find('}', r_pos);
+        if (end_b == std::string::npos) end_b = pr.body.size();
+        std::string blk = pr.body.substr(r_pos, end_b - r_pos + 1);
+        std::string res_name = jsonGetStr(blk, "resolution");
+        std::string u_str = jsonGetStr(blk, "url");
+        if (!u_str.empty()) {
+            StreamOption opt;
+            if (res_name == "super" || res_name == "high") {
+                opt.label = "Switch适配 1080P (" + res_name + ")";
+                res.qualities.insert(res.qualities.begin(), opt);
+                res.qualities.front().url = u_str;
+                res.qualities.front().headers = hdrs;
+            } else {
+                opt.label = "夸克云转码 (" + res_name + ")";
+                opt.url = u_str;
+                opt.headers = hdrs;
+                res.qualities.push_back(opt);
+            }
+        }
+        scan_p = end_b + 1;
+    }
+
+    // 2. 同时提供夸克 4K/原画高速直链作为备选切换 (按 Y 键可随时切到原画)
     std::string dl_api = "https://drive-pc.quark.cn/1/clouddrive/file/download?pr=ucpro&fr=pc&sys=win32&ve=2.5.56";
     std::string dl_body = "{\"fids\":[\"" + target_fid + "\"]}";
     HttpResponse dlr = HttpClient::postJson(dl_api, dl_body, hdrs);
-    std::string raw_url = regexExtract(dlr.body, "\"download_url\"\\s*:\\s*\"([^\"]+)\"");
+    std::string raw_url = regexExtract(dlr.body, "\"download_url\"");
     if (!raw_url.empty()) {
         StreamOption opt;
         opt.label = "夸克 4K/原画直链";
         opt.url = raw_url;
-        opt.headers = hdrs;
-        res.qualities.push_back(opt);
-    }
-
-    // 2. 请求夸克云端 HLS 多码率转码流 (4K / 2K / 超清 / 高清)
-    std::string play_api = "https://drive-pc.quark.cn/1/clouddrive/file/v2/play?pr=ucpro&fr=pc";
-    std::string play_body = "{\"fid\":\"" + target_fid + "\",\"resolutions\":\"normal,low,high,super,2k,4k\",\"supports\":\"fmp4,m3u8\"}";
-    HttpResponse pr = HttpClient::postJson(play_api, play_body, hdrs);
-    std::regex v_re("\\{[^{}]*?\"resolution\"\\s*:\\s*\"([^\"]+)\"[^{}]*?\"url\"\\s*:\\s*\"([^\"]+)\"[^{}]*?\\}");
-    for (auto it = std::sregex_iterator(pr.body.begin(), pr.body.end(), v_re);
-         it != std::sregex_iterator(); ++it) {
-        StreamOption opt;
-        opt.label = "夸克云转码 (" + (*it)[1].str() + ")";
-        opt.url = (*it)[2].str();
         opt.headers = hdrs;
         res.qualities.push_back(opt);
     }
@@ -480,19 +574,23 @@ std::vector<NetdiskFileItem> NetdiskAuth::listBaiduPersonalFiles(
     );
     if (!resp.ok()) return items;
 
-    std::regex item_re("\\{[^{}]*?\"fs_id\"\\s*:\\s*(\\d+)[^{}]*?\"server_filename\"\\s*:\\s*\"([^\"]+)\"[^{}]*?\\}");
-    for (auto it = std::sregex_iterator(resp.body.begin(), resp.body.end(), item_re);
-         it != std::sregex_iterator(); ++it) {
-        std::string block = (*it)[0].str();
+    size_t pos = 0;
+    while (pos < resp.body.size() && items.size() < 100) {
+        size_t f_pos = resp.body.find("\"fs_id\"", pos);
+        if (f_pos == std::string::npos) break;
+        size_t end_b = resp.body.find('}', f_pos);
+        if (end_b == std::string::npos) end_b = resp.body.size();
+        std::string block = resp.body.substr(f_pos, end_b - f_pos + 1);
         NetdiskFileItem fi;
-        fi.fid = (*it)[1].str();
-        fi.file_name = (*it)[2].str();
-        fi.pdir_fid = regexExtract(block, "\"path\"\\s*:\\s*\"([^\"]+)\"");
-        fi.is_dir = (block.find("\"isdir\":1") != std::string::npos);
+        fi.fid = jsonGetStr(block, "fs_id");
+        fi.file_name = jsonGetStr(block, "server_filename");
+        fi.pdir_fid = jsonGetStr(block, "path");
+        fi.is_dir = (block.find("\"isdir\":1") != std::string::npos || block.find("\"isdir\":\"1\"") != std::string::npos);
         fi.is_video = !fi.is_dir && isVideoFilename(fi.file_name);
-        std::string sz = regexExtract(block, "\"size\"\\s*:\\s*(\\d+)");
-        if (!sz.empty()) fi.size_bytes = std::stoll(sz);
-        items.push_back(fi);
+        if (!fi.fid.empty() && !fi.file_name.empty()) {
+            items.push_back(fi);
+        }
+        pos = end_b + 1;
     }
     return items;
 }
@@ -532,17 +630,23 @@ std::vector<NetdiskFileItem> NetdiskAuth::listBaiduShareFiles(
     out_uk = regexExtract(lr.body, "\"uk\"\\s*:\\s*(\\d+)");
     out_shareid = regexExtract(lr.body, "\"shareid\"\\s*:\\s*(\\d+)");
 
-    std::regex item_re("\\{[^{}]*?\"fs_id\"\\s*:\\s*\"?(\\d+)\"?[^{}]*?\"server_filename\"\\s*:\\s*\"([^\"]+)\"[^{}]*?\\}");
-    for (auto it = std::sregex_iterator(lr.body.begin(), lr.body.end(), item_re);
-         it != std::sregex_iterator(); ++it) {
-        std::string block = (*it)[0].str();
+    size_t pos = 0;
+    while (pos < lr.body.size() && items.size() < 100) {
+        size_t f_pos = lr.body.find("\"fs_id\"", pos);
+        if (f_pos == std::string::npos) break;
+        size_t end_b = lr.body.find('}', f_pos);
+        if (end_b == std::string::npos) end_b = lr.body.size();
+        std::string block = lr.body.substr(f_pos, end_b - f_pos + 1);
         NetdiskFileItem fi;
-        fi.fid = (*it)[1].str();
-        fi.file_name = (*it)[2].str();
-        fi.pdir_fid = regexExtract(block, "\"path\"\\s*:\\s*\"([^\"]+)\"");
+        fi.fid = jsonGetStr(block, "fs_id");
+        fi.file_name = jsonGetStr(block, "server_filename");
+        fi.pdir_fid = jsonGetStr(block, "path");
         fi.is_dir = (block.find("\"isdir\":1") != std::string::npos || block.find("\"isdir\":\"1\"") != std::string::npos);
         fi.is_video = !fi.is_dir && isVideoFilename(fi.file_name);
-        items.push_back(fi);
+        if (!fi.fid.empty() && !fi.file_name.empty()) {
+            items.push_back(fi);
+        }
+        pos = end_b + 1;
     }
     return items;
 }

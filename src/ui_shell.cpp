@@ -406,6 +406,7 @@ void SwitchPlayerShell::startPlayback(const VodItem& vod, const std::string& fla
     player_osd_visible_ = true;
     player_pos_sec_ = 0.0;
     modal_state_ = ModalState::VIDEO_PLAYING;
+    video_player_.start(active_play_.url, active_play_.headers);
 }
 
 void SwitchPlayerShell::runMainLoop() {
@@ -428,26 +429,31 @@ void SwitchPlayerShell::handleTouchOrClick(int tx, int ty) {
     if (modal_state_ == ModalState::VIDEO_PLAYING) {
         // 左上角关闭返回按钮 (32, 24, 110, 44)
         if (pointInRect(tx, ty, 24, 16, 130, 56)) {
+            video_player_.stop();
             modal_state_ = ModalState::VOD_DETAIL;
             return;
         }
         // 进度条拖动/点按跳进度 (48, 576, 1184, 36)
         if (pointInRect(tx, ty, 48, 572, 1184, 40)) {
             double ratio = std::clamp((tx - 48) / 1184.0, 0.0, 1.0);
-            player_pos_sec_ = ratio * player_dur_sec_;
+            video_player_.seekTo(ratio * video_player_.getDurationSec());
             return;
         }
         // 底部播放控制按钮栏
         if (ty >= 615) {
             if (pointInRect(tx, ty, 48, 620, 140, 50)) {
-                player_paused_ = !player_paused_;
+                video_player_.togglePause();
+                player_paused_ = video_player_.isPaused();
             } else if (pointInRect(tx, ty, 200, 620, 220, 50) && !active_play_.qualities.empty()) {
                 selected_quality_idx_ = (selected_quality_idx_ + 1) % static_cast<int>(active_play_.qualities.size());
                 active_play_.url = active_play_.qualities[selected_quality_idx_].url;
+                active_play_.headers = active_play_.qualities[selected_quality_idx_].headers;
+                video_player_.start(active_play_.url, active_play_.headers);
                 toast_msg_ = "已切换清晰度：" + active_play_.qualities[selected_quality_idx_].label;
                 toast_expire_ms_ = HttpClient::currentTimeMillis() + 3000;
             } else if (pointInRect(tx, ty, 440, 620, 150, 50)) {
                 player_speed_ = (player_speed_ >= 2.0f) ? 1.0f : (player_speed_ + 0.25f);
+                video_player_.setSpeed(player_speed_);
             }
             return;
         }
@@ -683,28 +689,36 @@ void SwitchPlayerShell::handleGamepadInput() {
 
     if (modal_state_ == ModalState::VIDEO_PLAYING) {
         if (kDown & HidNpadButton_B) {
+            video_player_.stop();
             modal_state_ = ModalState::VOD_DETAIL;
             return;
         }
-        if (kDown & HidNpadButton_A) player_paused_ = !player_paused_;
+        if (kDown & HidNpadButton_A) {
+            video_player_.togglePause();
+            player_paused_ = video_player_.isPaused();
+        }
         if (kDown & HidNpadButton_X) player_osd_visible_ = !player_osd_visible_;
-        if (kDown & HidNpadButton_Left)  player_pos_sec_ = std::max(0.0, player_pos_sec_ - 10.0);
-        if (kDown & HidNpadButton_Right) player_pos_sec_ = std::min(player_dur_sec_, player_pos_sec_ + 10.0);
-        if (kDown & HidNpadButton_Up)    player_volume_ = std::min(100, player_volume_ + 5);
-        if (kDown & HidNpadButton_Down)  player_volume_ = std::max(0, player_volume_ - 5);
+        if (kDown & HidNpadButton_Left)  video_player_.seekRelative(-10.0);
+        if (kDown & HidNpadButton_Right) video_player_.seekRelative(10.0);
+        if (kDown & HidNpadButton_Up)    { player_volume_ = std::min(100, player_volume_ + 5); video_player_.setVolume(player_volume_); }
+        if (kDown & HidNpadButton_Down)  { player_volume_ = std::max(0, player_volume_ - 5); video_player_.setVolume(player_volume_); }
         if (kDown & HidNpadButton_Y) {
             if (!active_play_.qualities.empty()) {
                 selected_quality_idx_ = (selected_quality_idx_ + 1) % static_cast<int>(active_play_.qualities.size());
                 active_play_.url = active_play_.qualities[selected_quality_idx_].url;
+                active_play_.headers = active_play_.qualities[selected_quality_idx_].headers;
+                video_player_.start(active_play_.url, active_play_.headers);
                 toast_msg_ = "已切换清晰度：" + active_play_.qualities[selected_quality_idx_].label;
                 toast_expire_ms_ = now_ms + 3000;
             }
         }
         if (r_stick.x > DEADZONE && now_ms - last_stick_move_ms_ > 250) {
             player_speed_ = std::min(2.0f, player_speed_ + 0.25f);
+            video_player_.setSpeed(player_speed_);
             last_stick_move_ms_ = now_ms;
         } else if (r_stick.x < -DEADZONE && now_ms - last_stick_move_ms_ > 250) {
             player_speed_ = std::max(0.5f, player_speed_ - 0.25f);
+            video_player_.setSpeed(player_speed_);
             last_stick_move_ms_ = now_ms;
         }
         return;
@@ -868,9 +882,10 @@ void SwitchPlayerShell::updateFrame(uint64_t now_ms) {
         });
     }
 
-    if (modal_state_ == ModalState::VIDEO_PLAYING && !player_paused_) {
-        player_pos_sec_ += (0.016 * player_speed_);
-        if (player_pos_sec_ >= player_dur_sec_) player_pos_sec_ = 0.0;
+    if (modal_state_ == ModalState::VIDEO_PLAYING) {
+        player_pos_sec_ = video_player_.getPositionSec();
+        player_dur_sec_ = std::max(1.0, video_player_.getDurationSec());
+        player_paused_ = video_player_.isPaused();
     }
 }
 
@@ -910,6 +925,45 @@ void SwitchPlayerShell::drawRoundedOutline(int x, int y, int w, int h, int radiu
         drawRect(x - t, y - t, w + 2 * t, h + 2 * t, color, false);
     }
     (void)radius;
+}
+
+
+SDL_Texture* SwitchPlayerShell::getOrFetchPosterTex(const std::string& pic_url) {
+    if (pic_url.empty() || pic_url.rfind("http", 0) != 0) return nullptr;
+    auto it = poster_tex_cache_.find(pic_url);
+    if (it != poster_tex_cache_.end()) {
+        return it->second;
+    }
+    {
+        std::lock_guard<std::mutex> lk(data_mutex_);
+        auto bit = pending_poster_bytes_.find(pic_url);
+        if (bit != pending_poster_bytes_.end()) {
+            SDL_Texture* tex = nullptr;
+            if (!bit->second.empty()) {
+                SDL_RWops* rw = SDL_RWFromConstMem(bit->second.data(), static_cast<int>(bit->second.size()));
+                if (rw) {
+                    tex = IMG_LoadTexture_RW(renderer_, rw, 1);
+                    if (tex) SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+                }
+            }
+            poster_tex_cache_[pic_url] = tex;
+            pending_poster_bytes_.erase(bit);
+            return tex;
+        }
+        if (poster_fetching_[pic_url]) return nullptr;
+        poster_fetching_[pic_url] = true;
+    }
+
+    spawnLargeStackThread([this, pic_url]() {
+        HttpResponse r = HttpClient::get(pic_url, {{"Referer", "https://movie.douban.com/"}}, 6000, true);
+        std::lock_guard<std::mutex> lk(data_mutex_);
+        if (r.ok() && r.body.size() > 64) {
+            pending_poster_bytes_[pic_url] = std::move(r.body);
+        } else {
+            pending_poster_bytes_[pic_url] = "";
+        }
+    });
+    return nullptr;
 }
 
 void SwitchPlayerShell::clearTextCache() {
@@ -1112,9 +1166,10 @@ void SwitchPlayerShell::renderVodGrid() {
         // 海报封面区（轻音少女主题封面底图 + 暗色渐变叠层）
         SDL_Color art = cardAccentColor(current_vods_[i].vod_name);
         drawRoundedRect(cx + 8, cy + 8, card_w - 16, 168, 9, art);
-        SDL_Texture* card_tex = kon_card_tex_[i % 5];
+        SDL_Texture* poster_tex = getOrFetchPosterTex(current_vods_[i].vod_pic);
+        SDL_Texture* card_tex = poster_tex ? poster_tex : kon_card_tex_[i % 5];
         if (card_tex) {
-            SDL_SetTextureAlphaMod(card_tex, focused ? 225 : 170);
+            SDL_SetTextureAlphaMod(card_tex, poster_tex ? 255 : (focused ? 225 : 170));
             SDL_Rect art_dst{cx + 9, cy + 9, card_w - 18, 166};
             SDL_RenderCopy(renderer_, card_tex, nullptr, &art_dst);
             drawRect(cx + 9, cy + 132, card_w - 18, 43, {12, 16, 26, 175});
@@ -1306,20 +1361,16 @@ void SwitchPlayerShell::renderQrLoginModal() {
 void SwitchPlayerShell::renderFullscreenPlayer() {
     drawRect(0, 0, 1280, 720, {8, 10, 16, 255});
 
-    // 动态模拟渲染帧画面与实时网速/帧率信息 (参考视频 02:10 样式)
-    if (kon_bg_tex_) {
-        SDL_SetTextureAlphaMod(kon_bg_tex_, 165);
-        SDL_Rect vrect{0, 0, 1280, 720};
-        SDL_RenderCopy(renderer_, kon_bg_tex_, nullptr, &vrect);
-        drawRect(0, 0, 1280, 720, {8, 12, 20, 110});
-    }
+    // 渲染真实 FFmpeg 解码出的视频画面帧
+    SDL_Rect full_dst{0, 0, 1280, 720};
+    video_player_.renderVideoFrame(renderer_, full_dst);
 
     if (player_osd_visible_) {
-        // 顶部状态栏（左上关闭按钮 + 实时速率 + 右上剧集名）
+        // 顶部状态栏（左上关闭按钮 + 实时解码分辨率状态 + 右上剧集名）
         drawRect(0, 0, 1280, 68, {12, 16, 26, 210});
         drawRoundedRect(28, 14, 116, 40, 9, {48, 60, 84, 240});
         drawTextCentered("X 退出播放", 86, 24, {255, 255, 255, 255});
-        drawText("HW  H264  1080P  60.0FPS  4.8MB/s", 168, 24, {121, 210, 255, 255});
+        drawTextClipped(video_player_.getVideoStats(), 164, 24, 600, {121, 210, 255, 255});
         drawTextClipped(active_vod_.vod_name, 780, 22, 470, {255, 255, 255, 255}, true);
 
         // 底部 OSD 控制面板
@@ -1396,8 +1447,13 @@ void SwitchPlayerShell::renderFrame() {
 }
 
 void SwitchPlayerShell::shutdown() {
+    video_player_.stop();
     lan_server_.stop();
     clearTextCache();
+    for (auto& kv : poster_tex_cache_) {
+        if (kv.second) SDL_DestroyTexture(kv.second);
+    }
+    poster_tex_cache_.clear();
     if (active_qr_png_tex_) SDL_DestroyTexture(active_qr_png_tex_);
     if (kon_bg_tex_) SDL_DestroyTexture(kon_bg_tex_);
     if (kon_banner_tex_) SDL_DestroyTexture(kon_banner_tex_);

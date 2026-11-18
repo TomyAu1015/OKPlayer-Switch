@@ -4,6 +4,7 @@
 #include "js_engine.hpp"
 #include "netdisk_auth.hpp"
 #include "lan_server.hpp"
+#include "video_player.hpp"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 #include <string>
@@ -92,6 +93,11 @@ private:
     TTF_Font* font_regular_ = nullptr;
     TTF_Font* font_large_ = nullptr;
     std::unordered_map<std::string, CachedTextTex> text_cache_;
+    std::unordered_map<std::string, SDL_Texture*> poster_tex_cache_;
+    std::unordered_map<std::string, std::string> pending_poster_bytes_;
+    std::unordered_map<std::string, bool> poster_fetching_;
+    VideoPlayer video_player_;
+    SDL_Texture* getOrFetchPosterTex(const std::string& pic_url);
 
     // 轻音少女 (K-ON! HTT) 主题纹理缓存
     SDL_Texture* kon_bg_tex_ = nullptr;
