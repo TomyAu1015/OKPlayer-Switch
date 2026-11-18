@@ -40,7 +40,7 @@ ASFLAGS	:=	-g $(ARCH)
 LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 
 LIBS	:= -lSDL2_ttf -lSDL2_image -lSDL2 -lfreetype -lharfbuzz -lpng -ljpeg -lwebp \
-		   -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -lz -lzstd -lglad -lEGL -lglapi -ldrm_nouveau -lnx -lm -lpthread
+		   -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -lz -lbz2 -lglad -lEGL -lglapi -ldrm_nouveau -lnx -lm -lpthread
 
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level containing
@@ -130,7 +130,7 @@ prepare_romfs:
 
 $(BUILD):
 	@[ -d $@ ] || mkdir -p $@
-	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
+	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile all
 
 nsp: $(BUILD)
 	@python3 "$(TOPDIR)/tools/build_nsp.py" "$(TOPDIR)/dist/OKPlayer_Switch_01058800A9E20000.nsp" "$(TOPDIR)/$(TARGET).nro" "$(TOPDIR)/icon.jpg"

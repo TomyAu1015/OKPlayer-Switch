@@ -69,15 +69,13 @@ QRLoginSession NetdiskAuth::startQuarkQRLogin() {
                    token + "&client_id=532&v=1.2";
         s.state = QRLoginState::WAITING_SCAN;
         s.status_text = "请打开手机【夸克APP】扫一扫登录夸克网盘";
+        generateQrMatrix(s.qr_url, s.qr_size, s.qr_modules);
     } else {
-        // 离线或受限网络环境下仍生成标准夸克授权二维码供扫码或局域网Web绑定
-        s.qr_token = "qtoken_" + s.request_id.substr(0, 8);
-        s.qr_url = "https://b.quark.cn/apps/q_login_quark/routes/index?token=" +
-                   s.qr_token + "&client_id=532&v=1.2";
-        s.state = QRLoginState::WAITING_SCAN;
-        s.status_text = "请用手机【夸克APP】扫码，或在局域网网页端粘贴Cookie";
+        s.state = QRLoginState::EXPIRED_OR_ERROR;
+        s.qr_size = 0;
+        s.qr_modules.clear();
+        s.status_text = "获取夸克二维码失败(" + (resp.error.empty() ? "网络异常" : resp.error) + ")，请按[A]重试或用局域网网页传Cookie";
     }
-    generateQrMatrix(s.qr_url, s.qr_size, s.qr_modules);
     return s;
 }
 
@@ -340,16 +338,16 @@ QRLoginSession NetdiskAuth::startBaiduQRLogin() {
     std::string sign = regexExtract(resp.body, "\"sign\"\\s*:\\s*\"([^\"]+)\"");
     if (!sign.empty()) {
         s.qr_token = sign;
-        s.qr_url = "https://wappass.baidu.com/wp/?qrlogin=&sign=" + sign;
+        s.qr_url = "https://wappass.baidu.com/wp/?qrlogin=&sign=" + sign + "&lp=pc&qrloginfrom=pc";
         s.state = QRLoginState::WAITING_SCAN;
         s.status_text = "请打开手机【百度网盘APP】扫一扫登录百度网盘";
+        generateQrMatrix(s.qr_url, s.qr_size, s.qr_modules);
     } else {
-        s.qr_token = "bdsign_" + s.request_id.substr(0, 8);
-        s.qr_url = "https://wappass.baidu.com/wp/?qrlogin=&sign=" + s.qr_token;
-        s.state = QRLoginState::WAITING_SCAN;
-        s.status_text = "请用【百度网盘APP】扫码，或在局域网网页端粘贴BDUSS/Cookie";
+        s.state = QRLoginState::EXPIRED_OR_ERROR;
+        s.qr_size = 0;
+        s.qr_modules.clear();
+        s.status_text = "获取百度二维码失败(" + (resp.error.empty() ? "网络异常" : resp.error) + ")，请按[A]重试或用局域网网页传Cookie";
     }
-    generateQrMatrix(s.qr_url, s.qr_size, s.qr_modules);
     return s;
 }
 
@@ -569,57 +567,325 @@ PlayResult NetdiskAuth::resolveBaiduPlayUrl(
 }
 
 // =============================================================================
-// 3. 二维码矩阵生成器 (带标准 Finder Pattern、Timing Pattern 与数据编码渲染)
+// 3. 标准 ISO/IEC 18004 二维码编码器 (支持 Version 1-15, Byte 模式, ECC-M)
 // =============================================================================
-void NetdiskAuth::generateQrMatrix(const std::string& text, int& out_size, std::vector<uint8_t>& out_modules) {
-    // 采用 29x29 (Version 3) 矩阵尺寸，包含完整定位框、对齐框、时序线与内容编码位
-    out_size = 29;
-    out_modules.assign(out_size * out_size, 0);
-    auto setMod = [&](int x, int y, uint8_t v) {
-        if (x >= 0 && x < out_size && y >= 0 && y < out_size) {
-            out_modules[y * out_size + x] = v;
+namespace {
+
+struct QrEncoder {
+    int version = 1;
+    int size = 21;
+    std::vector<uint8_t> modules;
+    std::vector<uint8_t> is_func;
+
+    static uint8_t gfMul(uint8_t x, uint8_t y) {
+        int z = 0;
+        for (int i = 7; i >= 0; --i) {
+            z = (z << 1) ^ ((z >> 7) * 0x11D);
+            z ^= ((y >> i) & 1) * x;
         }
-    };
-    auto drawFinder = [&](int ox, int oy) {
-        for (int dy = 0; dy < 7; ++dy) {
-            for (int dx = 0; dx < 7; ++dx) {
-                bool border = (dx == 0 || dx == 6 || dy == 0 || dy == 6);
-                bool center = (dx >= 2 && dx <= 4 && dy >= 2 && dy <= 4);
-                setMod(ox + dx, oy + dy, (border || center) ? 1 : 0);
+        return static_cast<uint8_t>(z);
+    }
+
+    static std::vector<uint8_t> rsGenPoly(int degree) {
+        std::vector<uint8_t> res(degree, 0);
+        res[degree - 1] = 1;
+        uint8_t root = 1;
+        for (int i = 0; i < degree; ++i) {
+            for (int j = 0; j < degree; ++j) {
+                res[j] = gfMul(res[j], root);
+                if (j + 1 < degree) res[j] ^= res[j + 1];
+            }
+            root = gfMul(root, 0x02);
+        }
+        return res;
+    }
+
+    static std::vector<uint8_t> rsRemainder(const std::vector<uint8_t>& data, const std::vector<uint8_t>& div) {
+        std::vector<uint8_t> res(div.size(), 0);
+        for (uint8_t b : data) {
+            uint8_t factor = b ^ res[0];
+            res.erase(res.begin());
+            res.push_back(0);
+            for (size_t i = 0; i < div.size(); ++i) {
+                res[i] ^= gfMul(div[i], factor);
             }
         }
-    };
-    drawFinder(0, 0);
-    drawFinder(out_size - 7, 0);
-    drawFinder(0, out_size - 7);
-
-    // Alignment pattern at (20, 20)
-    for (int dy = -2; dy <= 2; ++dy) {
-        for (int dx = -2; dx <= 2; ++dx) {
-            bool b = (std::abs(dx) == 2 || std::abs(dy) == 2 || (dx == 0 && dy == 0));
-            setMod(22 + dx, 22 + dy, b ? 1 : 0);
-        }
-    }
-    // Timing patterns
-    for (int i = 8; i < out_size - 8; ++i) {
-        setMod(i, 6, (i % 2 == 0) ? 1 : 0);
-        setMod(6, i, (i % 2 == 0) ? 1 : 0);
+        return res;
     }
 
-    // Encode URL bytes into the remaining modules deterministically
-    std::string hash = HttpClient::md5Hex(text);
-    size_t bit_idx = 0;
-    for (int y = 0; y < out_size; ++y) {
-        for (int x = 0; x < out_size; ++x) {
-            if ((x < 8 && y < 8) || (x >= out_size - 8 && y < 8) || (x < 8 && y >= out_size - 8)) continue;
-            if (x == 6 || y == 6) continue;
-            if (x >= 20 && x <= 24 && y >= 20 && y <= 24) continue;
-            unsigned char ch = static_cast<unsigned char>(text[(bit_idx / 8) % text.size()]) ^
-                               static_cast<unsigned char>(hash[(bit_idx / 3) % hash.size()]);
-            uint8_t bit = (ch >> (bit_idx % 8)) & 1;
-            setMod(x, y, bit);
-            ++bit_idx;
+    void setFunc(int x, int y, bool dark) {
+        if (x >= 0 && x < size && y >= 0 && y < size) {
+            modules[y * size + x] = dark ? 1 : 0;
+            is_func[y * size + x] = 1;
         }
+    }
+
+    void drawFinder(int cx, int cy) {
+        for (int dy = -4; dy <= 4; ++dy) {
+            for (int dx = -4; dx <= 4; ++dx) {
+                int dist = std::max(std::abs(dx), std::abs(dy));
+                int xx = cx + dx, yy = cy + dy;
+                if (xx >= 0 && xx < size && yy >= 0 && yy < size) {
+                    setFunc(xx, yy, dist != 2 && dist != 4);
+                }
+            }
+        }
+    }
+
+    void drawAlignment(int cx, int cy) {
+        for (int dy = -2; dy <= 2; ++dy) {
+            for (int dx = -2; dx <= 2; ++dx) {
+                setFunc(cx + dx, cy + dy, std::max(std::abs(dx), std::abs(dy)) != 1);
+            }
+        }
+    }
+
+    std::vector<int> alignmentPositions() const {
+        if (version == 1) return {};
+        int num = version / 7 + 2;
+        int step = (version == 32) ? 26 : ((version * 4 + num * 2 + 1) / (num * 2 - 2)) * 2;
+        std::vector<int> pos{6};
+        for (int i = 0, p = size - 7; i < num - 1; ++i, p -= step) {
+            pos.insert(pos.begin() + 1, p);
+        }
+        return pos;
+    }
+
+    void drawFunctionPatterns() {
+        for (int i = 0; i < size; ++i) {
+            setFunc(6, i, i % 2 == 0);
+            setFunc(i, 6, i % 2 == 0);
+        }
+        drawFinder(3, 3);
+        drawFinder(size - 4, 3);
+        drawFinder(3, size - 4);
+
+        auto align = alignmentPositions();
+        for (size_t i = 0; i < align.size(); ++i) {
+            for (size_t j = 0; j < align.size(); ++j) {
+                if (!((i == 0 && j == 0) || (i == 0 && j == align.size() - 1) || (i == align.size() - 1 && j == 0))) {
+                    drawAlignment(align[i], align[j]);
+                }
+            }
+        }
+        // Format info placeholders
+        for (int i = 0; i <= 5; ++i) setFunc(8, i, false);
+        setFunc(8, 7, false);
+        setFunc(8, 8, false);
+        setFunc(7, 8, false);
+        for (int i = 9; i < 15; ++i) setFunc(14 - i, 8, false);
+        for (int i = 0; i < 8; ++i) setFunc(size - 1 - i, 8, false);
+        for (int i = 8; i < 15; ++i) setFunc(8, size - 15 + i, false);
+        setFunc(8, size - 8, true);
+
+        // Version info (v >= 7)
+        if (version >= 7) {
+            int rem = version;
+            for (int i = 0; i < 12; ++i) rem = (rem << 1) ^ ((rem >> 11) * 0x1F25);
+            int bits = (version << 12) | rem;
+            for (int i = 0; i < 18; ++i) {
+                bool bit = ((bits >> i) & 1) != 0;
+                int a = size - 11 + i % 3;
+                int b = i / 3;
+                setFunc(a, b, bit);
+                setFunc(b, a, bit);
+            }
+        }
+    }
+
+    void drawFormatBits(int mask) {
+        // ECC-M = 0 (bits 00)
+        int data = (0 << 3) | mask;
+        int rem = data;
+        for (int i = 0; i < 10; ++i) rem = (rem << 1) ^ ((rem >> 9) * 0x537);
+        int bits = ((data << 10) | rem) ^ 0x5412;
+        for (int i = 0; i <= 5; ++i) setFunc(8, i, ((bits >> i) & 1) != 0);
+        setFunc(8, 7, ((bits >> 6) & 1) != 0);
+        setFunc(8, 8, ((bits >> 7) & 1) != 0);
+        setFunc(7, 8, ((bits >> 8) & 1) != 0);
+        for (int i = 9; i < 15; ++i) setFunc(14 - i, 8, ((bits >> i) & 1) != 0);
+        for (int i = 0; i < 8; ++i) setFunc(size - 1 - i, 8, ((bits >> i) & 1) != 0);
+        for (int i = 8; i < 15; ++i) setFunc(8, size - 15 + i, ((bits >> i) & 1) != 0);
+    }
+
+    void drawCodewords(const std::vector<uint8_t>& cw) {
+        size_t i = 0;
+        for (int right = size - 1; right >= 1; right -= 2) {
+            if (right == 6) right = 5;
+            for (int vert = 0; vert < size; ++vert) {
+                for (int j = 0; j < 2; ++j) {
+                    int x = right - j;
+                    bool upward = ((right + 1) & 2) == 0;
+                    int y = upward ? (size - 1 - vert) : vert;
+                    if (!is_func[y * size + x] && i < cw.size() * 8) {
+                        modules[y * size + x] = ((cw[i >> 3] >> (7 - (i & 7))) & 1);
+                        ++i;
+                    }
+                }
+            }
+        }
+    }
+
+    void applyMask(int mask) {
+        for (int y = 0; y < size; ++y) {
+            for (int x = 0; x < size; ++x) {
+                if (is_func[y * size + x]) continue;
+                bool inv = false;
+                switch (mask) {
+                    case 0: inv = (x + y) % 2 == 0; break;
+                    case 1: inv = y % 2 == 0; break;
+                    case 2: inv = x % 3 == 0; break;
+                    case 3: inv = (x + y) % 3 == 0; break;
+                    case 4: inv = (x / 3 + y / 2) % 2 == 0; break;
+                    case 5: inv = x * y % 2 + x * y % 3 == 0; break;
+                    case 6: inv = (x * y % 2 + x * y % 3) % 2 == 0; break;
+                    case 7: inv = ((x + y) % 2 + x * y % 3) % 2 == 0; break;
+                }
+                if (inv) modules[y * size + x] ^= 1;
+            }
+        }
+    }
+
+    int getPenalty() const {
+        int res = 0;
+        for (int y = 0; y < size; ++y) {
+            int runX = 0, runY = 0;
+            uint8_t colX = 2, colY = 2;
+            for (int x = 0; x < size; ++x) {
+                uint8_t cx = modules[y * size + x];
+                if (cx == colX) { ++runX; if (runX == 5) res += 3; else if (runX > 5) res += 1; }
+                else { colX = cx; runX = 1; }
+                uint8_t cy = modules[x * size + y];
+                if (cy == colY) { ++runY; if (runY == 5) res += 3; else if (runY > 5) res += 1; }
+                else { colY = cy; runY = 1; }
+            }
+        }
+        for (int y = 0; y < size - 1; ++y) {
+            for (int x = 0; x < size - 1; ++x) {
+                uint8_t c = modules[y * size + x];
+                if (c == modules[y * size + x + 1] && c == modules[(y + 1) * size + x] && c == modules[(y + 1) * size + x + 1]) {
+                    res += 3;
+                }
+            }
+        }
+        return res;
+    }
+
+    bool encode(const std::string& text) {
+        // ECC-M tables for Versions 1..15:
+        // {dataCodewords, numBlocks, eccPerBlock}
+        static const int ECC_M[16][3] = {
+            {0,0,0},
+            {16,1,10}, {28,1,16}, {44,1,26}, {64,2,18}, {86,2,24},
+            {108,4,16}, {124,4,18}, {154,4,22}, {182,5,22}, {216,5,26},
+            {254,5,30}, {290,8,22}, {334,9,22}, {365,9,24}, {415,10,24}
+        };
+        static const int TOTAL_CODEWORDS[16] = {
+            0, 26, 44, 70, 100, 134, 172, 196, 242, 292, 346, 404, 466, 532, 581, 655
+        };
+
+        int len = static_cast<int>(text.size());
+        version = 0;
+        for (int v = 1; v <= 15; ++v) {
+            int cc_bits = (v <= 9) ? 8 : 16;
+            int needed_bits = 4 + cc_bits + len * 8;
+            if (needed_bits <= ECC_M[v][0] * 8) {
+                version = v;
+                break;
+            }
+        }
+        if (version == 0) return false;
+
+        size = version * 4 + 17;
+        modules.assign(size * size, 0);
+        is_func.assign(size * size, 0);
+
+        // Bitstream
+        std::vector<uint8_t> bits;
+        auto pushBits = [&](uint32_t val, int n, int& bit_pos) {
+            for (int i = n - 1; i >= 0; --i) {
+                if ((bit_pos & 7) == 0) bits.push_back(0);
+                if ((val >> i) & 1) bits.back() |= (1 << (7 - (bit_pos & 7)));
+                ++bit_pos;
+            }
+        };
+        int bp = 0;
+        pushBits(0x4, 4, bp); // Byte mode
+        pushBits(static_cast<uint32_t>(len), (version <= 9) ? 8 : 16, bp);
+        for (unsigned char c : text) pushBits(c, 8, bp);
+
+        int data_cap = ECC_M[version][0];
+        int term = std::min(4, data_cap * 8 - bp);
+        pushBits(0, term, bp);
+        if ((bp & 7) != 0) pushBits(0, 8 - (bp & 7), bp);
+        for (int pad = 0; static_cast<int>(bits.size()) < data_cap; ++pad) {
+            bits.push_back((pad & 1) ? 0x11 : 0xEC);
+        }
+
+        // Split into blocks & append RS ECC
+        int num_blocks = ECC_M[version][1];
+        int ecc_len = ECC_M[version][2];
+        int total_cw = TOTAL_CODEWORDS[version];
+        int raw_ecc_blocks_short = num_blocks - (total_cw % num_blocks);
+        int short_block_len = total_cw / num_blocks;
+        auto poly = rsGenPoly(ecc_len);
+
+        std::vector<std::vector<uint8_t>> blocks(num_blocks);
+        std::vector<std::vector<uint8_t>> eccs(num_blocks);
+        size_t pos = 0;
+        for (int b = 0; b < num_blocks; ++b) {
+            int dat_len = short_block_len - ecc_len + (b < raw_ecc_blocks_short ? 0 : 1);
+            blocks[b].assign(bits.begin() + pos, bits.begin() + pos + dat_len);
+            eccs[b] = rsRemainder(blocks[b], poly);
+            pos += dat_len;
+        }
+
+        std::vector<uint8_t> final_cw;
+        int max_dat = short_block_len - ecc_len + ((raw_ecc_blocks_short < num_blocks) ? 1 : 0);
+        for (int i = 0; i < max_dat; ++i) {
+            for (int b = 0; b < num_blocks; ++b) {
+                if (i < static_cast<int>(blocks[b].size())) final_cw.push_back(blocks[b][i]);
+            }
+        }
+        for (int i = 0; i < ecc_len; ++i) {
+            for (int b = 0; b < num_blocks; ++b) {
+                final_cw.push_back(eccs[b][i]);
+            }
+        }
+
+        drawFunctionPatterns();
+        drawCodewords(final_cw);
+
+        int best_mask = 0;
+        int best_pen = 1e9;
+        auto base_modules = modules;
+        for (int m = 0; m < 8; ++m) {
+            modules = base_modules;
+            applyMask(m);
+            drawFormatBits(m);
+            int p = getPenalty();
+            if (p < best_pen) {
+                best_pen = p;
+                best_mask = m;
+            }
+        }
+        modules = base_modules;
+        applyMask(best_mask);
+        drawFormatBits(best_mask);
+        return true;
+    }
+};
+
+} // namespace
+
+void NetdiskAuth::generateQrMatrix(const std::string& text, int& out_size, std::vector<uint8_t>& out_modules) {
+    QrEncoder enc;
+    if (enc.encode(text)) {
+        out_size = enc.size;
+        out_modules = std::move(enc.modules);
+    } else {
+        out_size = 0;
+        out_modules.clear();
     }
 }
 

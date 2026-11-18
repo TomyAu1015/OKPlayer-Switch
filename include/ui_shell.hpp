@@ -8,6 +8,10 @@
 #include <SDL2/SDL_ttf.h>
 #include <string>
 #include <vector>
+#include <unordered_map>
+#include <mutex>
+#include <atomic>
+#include <thread>
 
 namespace okplayer {
 
@@ -27,13 +31,18 @@ enum class ModalState {
     VIDEO_PLAYING = 3     // 全屏视频播放界面 (支持摇杆快进/音量/倍速/清晰度切换)
 };
 
+struct CachedTextTex {
+    SDL_Texture* tex = nullptr;
+    int w = 0;
+    int h = 0;
+};
+
 class SwitchPlayerShell {
 public:
     bool init();
     void runMainLoop();
     void shutdown();
 
-    // 调用 Switch 系统原生软键盘 (swkbd) 直接输入源地址或搜索词
     static std::string openSwitchSoftwareKeyboard(
         const std::string& header_text,
         const std::string& sub_text,
@@ -49,7 +58,6 @@ private:
     void renderTopBar();
     void renderSiteAndCategorySidebar();
     void renderVodGrid();
-    void renderNetdiskPanel(NetdiskProvider provider);
     void renderSettingsPanel();
     void renderDetailModal();
     void renderQrLoginModal();
@@ -57,10 +65,14 @@ private:
     void renderBottomGamepadLegend();
 
     void drawRect(int x, int y, int w, int h, SDL_Color color, bool filled = true);
+    void drawRoundedRect(int x, int y, int w, int h, int radius, SDL_Color color);
+    void drawRoundedOutline(int x, int y, int w, int h, int radius, int thickness, SDL_Color color);
     void drawText(const std::string& text, int x, int y, SDL_Color color, bool large = false);
+    void drawTextCentered(const std::string& text, int cx, int y, SDL_Color color, bool large = false);
+    void clearTextCache();
 
     // 业务动作
-    void reloadSourceUrl(const std::string& new_url);
+    void reloadSourceUrlAsync(const std::string& new_url);
     void refreshCurrentSiteContent();
     void promptEditSourceUrl();
     void promptSearchKeyword();
@@ -71,12 +83,21 @@ private:
     SDL_Renderer* renderer_ = nullptr;
     TTF_Font* font_regular_ = nullptr;
     TTF_Font* font_large_ = nullptr;
+    std::unordered_map<std::string, CachedTextTex> text_cache_;
 
     bool running_ = true;
     AppConfig config_;
     LoadedSourceBundle bundle_;
     JsSpiderEngine js_engine_;
     LanWebServer lan_server_;
+
+    // 异步加载与线程安全锁
+    std::mutex data_mutex_;
+    std::atomic<bool> source_loading_{false};
+    std::atomic<bool> qr_polling_{false};
+    std::atomic<bool> qr_loading_{false};
+    bool pending_source_apply_ = false;
+    LoadedSourceBundle pending_bundle_;
 
     TopTab current_tab_ = TopTab::HOME_VOD;
     ModalState modal_state_ = ModalState::NONE;
